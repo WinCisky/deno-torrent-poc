@@ -19,12 +19,14 @@ function getHttpTrackersUrl(trackers: string[]): string[] | null {
     return httpTrackers.length > 0 ? httpTrackers : null;
 }
 
-export async function getTrackers(parsedMagnet: {
+export async function getHttpTrackers(peerId: string, parsedMagnet: {
     info: string;
     infohash: Uint8Array<ArrayBuffer>;
     trackers: string[];
     name: string | null;
 }) {
+    const peersSet = new Set<string>();
+
     const httpTrackerUrls = getHttpTrackersUrl(parsedMagnet.trackers);
     if (!httpTrackerUrls) {
         console.log('No HTTP tracker found');
@@ -33,11 +35,7 @@ export async function getTrackers(parsedMagnet: {
     const infoHash = hexToUint8(parsedMagnet.info); // Convert hex to Uint8Array
     const encodedInfoHash = percentEncodeInfoHash(infoHash);
 
-    const peerId = '-DN0001-' + crypto.getRandomValues(new Uint8Array(12)).reduce((s, b) => s + String.fromCharCode(65 + (b % 26)), '');
-
     const port = 6881;
-
-    const responses = [];
     
     for (const trackerUrl of httpTrackerUrls) {
         const url = new URL(trackerUrl);
@@ -48,10 +46,13 @@ export async function getTrackers(parsedMagnet: {
 
         try {
             const decoded = bdecode(body);
-            responses.push(decoded);
+            decoded.peers.forEach((peer: { ip: string; port: number }) => peersSet.add(`${peer.ip}:${peer.port}`));
         } catch (e) {
             console.log(new TextDecoder().decode(body));
         }
     }
-    return responses;
+    return Array.from(peersSet).map(p => {
+        const [ip, portStr] = p.split(':');
+        return { ip, port: parseInt(portStr) };
+    });
 }

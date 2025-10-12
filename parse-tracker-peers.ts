@@ -10,12 +10,12 @@ function parsePeers(peers: Uint8Array): { ip: string; port: number }[] {
 }
 
 export function parseTrackerPeers(trackers: any): { ip: string; port: number }[] | null {
-    if (!trackers || !trackers.peers) {
+    if (!trackers || trackers.length === 0) {
         console.log('No peers found in tracker response');
         return null;
     }
-    
-    const peerList = parsePeers(trackers.peers);
+
+    const peerList = parsePeers(trackers);
 
     // remove those with invalid IPs or ports
     const validPeerList = peerList.filter(p => {
