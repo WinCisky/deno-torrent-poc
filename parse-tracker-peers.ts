@@ -1,12 +1,12 @@
 
-function parsePeers(peersBinary: Uint8Array): { ip: string; port: number }[] {
-    const peers = [];
-    for (let i = 0; i < peersBinary.length; i += 6) {
-        const ip = peersBinary.slice(i, i + 4).join('.');
-        const port = (peersBinary[i + 4] << 8) + peersBinary[i + 5];
-        peers.push({ ip, port });
+function parsePeers(peers: Uint8Array): { ip: string; port: number }[] {
+    const peerList = [];
+    for (let i = 0; i < peers.length; i += 6) {
+        const ip = `${peers[i]}.${peers[i + 1]}.${peers[i + 2]}.${peers[i + 3]}`;
+        const port = (peers[i + 4] << 8) + peers[i + 5];
+        peerList.push({ ip, port });
     }
-    return peers;
+    return peerList;
 }
 
 export function parseTrackerPeers(trackers: any): { ip: string; port: number }[] | null {
@@ -14,13 +14,9 @@ export function parseTrackerPeers(trackers: any): { ip: string; port: number }[]
         console.log('No peers found in tracker response');
         return null;
     }
-
-    const peersBinary = typeof trackers.peers === "string"
-        ? new TextEncoder().encode(trackers.peers)
-        : trackers.peers as Uint8Array;
-
-    const peerList = parsePeers(peersBinary);
     
+    const peerList = parsePeers(trackers.peers);
+
     // remove those with invalid IPs or ports
     const validPeerList = peerList.filter(p => {
         const ipParts = p.ip.split('.').map(Number);

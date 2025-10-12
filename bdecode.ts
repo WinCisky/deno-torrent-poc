@@ -22,17 +22,13 @@ export function bdecode(buf: Uint8Array): any {
         return readNumber();
     }
 
-    function readString(): string | Uint8Array {
-        // read length until ':'
-        let lenStart = pos;
-        while (buf[pos] !== 0x3A /* ':' */) pos++;
-        const lenStr = new TextDecoder().decode(buf.subarray(lenStart, pos));
-        const len = parseInt(lenStr, 10);
-        pos++; // skip ':'
-        const strBytes = buf.subarray(pos, pos + len);
+    function readString(): Uint8Array {
+        const colon = buf.indexOf(0x3A, pos); // find ':'
+        const len = parseInt(new TextDecoder().decode(buf.subarray(pos, colon)));
+        pos = colon + 1;
+        const bytes = buf.subarray(pos, pos + len);
         pos += len;
-        // You can return string or Uint8Array — depends on use case
-        return new TextDecoder().decode(strBytes);
+        return bytes; // ✅ RETURN RAW BYTES
     }
 
     function readList(): any[] {
@@ -49,7 +45,7 @@ export function bdecode(buf: Uint8Array): any {
         pos++; // skip 'd'
         const dict: Record<string, any> = {};
         while (buf[pos] !== 0x65 /* 'e' */) {
-            const key = readString();
+            const key = new TextDecoder().decode(readString());
             const val = readAny();
             dict[key as string] = val;
         }
