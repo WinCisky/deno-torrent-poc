@@ -36,6 +36,8 @@ export async function getTrackers(parsedMagnet: {
     const peerId = '-DN0001-' + crypto.getRandomValues(new Uint8Array(12)).reduce((s, b) => s + String.fromCharCode(65 + (b % 26)), '');
 
     const port = 6881;
+
+    const responses = [];
     
     for (const trackerUrl of httpTrackerUrls) {
         const url = new URL(trackerUrl);
@@ -46,10 +48,10 @@ export async function getTrackers(parsedMagnet: {
 
         try {
             const decoded = bdecode(body);
-            return decoded;
+            responses.push(decoded);
         } catch (e) {
             console.log(new TextDecoder().decode(body));
         }
     }
-    return null;
+    return responses;
 }
