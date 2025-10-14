@@ -1,5 +1,7 @@
 import { parseMagnet } from './parse-magnet.ts';
 import { getUdpTrackers } from './udp-tracker.ts';
+import { getHttpTrackers } from './http-tracker.ts';
+import { parseTrackerPeers } from './parse-tracker-peers.ts';
 import { bdecode } from './bdecode.ts';
 
 // Minimal connection shape we use, to avoid depending on Deno types in annotations
@@ -59,7 +61,7 @@ async function sendExtendedHandshake(conn: ConnLike) {
 }
 
 
-async function tryConnect(infoHash: string, peerId: string, peer: { ip: string, port: number }, timeoutMs = 2000) {
+async function tryConnect(infoHash: string, peerId: string, peer: { ip: string, port: number }, timeoutMs = 2000): Promise<Uint8Array | null> {
     const peerIdBytes = new TextEncoder().encode(peerId);
     const infoHashBytes = hexToBytes(infoHash);
     const connPromise = (globalThis as any).Deno.connect({ hostname: peer.ip, port: peer.port });
@@ -83,27 +85,18 @@ async function tryConnect(infoHash: string, peerId: string, peer: { ip: string, 
             // Consume messages until we find extended handshake (id=20, ext id=0)
             const extHandshake = await readUntilExtendedHandshake(conn, timeoutMs);
             if (extHandshake) {
-                console.log("Decoded extended handshake:", extHandshake);
+                // console.log("Decoded extended handshake:", extHandshake);
                 // Try to fetch metadata via BEP-9 if supported
                 const m = (extHandshake as any).m as Record<string, unknown> | undefined;
                 const utMeta = typeof m?.["ut_metadata"] === 'number' ? (m!["ut_metadata"] as number) : null;
                 const metadataSize = typeof (extHandshake as any).metadata_size === 'number' ? (extHandshake as any).metadata_size as number : null;
-                console.log("Metadata size:", metadataSize, "UT Metadata ID:", utMeta);
+                // console.log("Metadata size:", metadataSize, "UT Metadata ID:", utMeta);
                 // Some peers require 'interested' before serving metadata
                 try { await sendInterested(conn); } catch { }
                 if (utMeta && metadataSize && metadataSize > 0 && metadataSize < 8 * 1024 * 1024) {
                     try {
                         const meta = await fetchMetadataFromPeer(conn, utMeta, metadataSize, timeoutMs);
-                        console.log("Fetched metadata:", meta);
-                        if (meta) {
-                            console.log(`✅ Retrieved metadata (${meta.length} bytes) from`, peer.ip, peer.port);
-                            try {
-                                const decoded = bdecode(meta);
-                                console.log("Decoded metadata info dict keys:", Object.keys(decoded || {}), decoded);
-                            } catch (_e) {
-                                // metadata might be binary bencoded; decoding failure can be ignored here
-                            }
-                        }
+                        if (meta) return meta;
                     } catch (e) {
                         // ignore per-peer metadata errors
                     }
@@ -113,8 +106,9 @@ async function tryConnect(infoHash: string, peerId: string, peer: { ip: string, 
         }
         conn.close();
     } catch (err) {
-        // console.warn("❌ Failed to connect to", peer.ip, peer.port, "-", err.message);
+        // swallow per-peer errors in race
     }
+    return null;
 }
 
 function createHandshake(infoHash: Uint8Array, peerId: Uint8Array): Uint8Array {
@@ -133,38 +127,69 @@ function createHandshake(infoHash: Uint8Array, peerId: Uint8Array): Uint8Array {
 
 const peerId = '-DN0001-' + crypto.getRandomValues(new Uint8Array(12)).reduce((s, b) => s + String.fromCharCode(65 + (b % 26)), '');
 
-export async function getTorrentMetadata(magnet: string) {
+export async function getTorrentMetadata(magnet: string, options: { skipHttp?: boolean; skipUdp?: boolean; skipDht?: boolean; } = {
+    skipHttp: true,
+    skipUdp: false,
+    skipDht: true
+}): Promise<Uint8Array | null> {
 
     const parsed = parseMagnet(magnet);
     const peers = new Set<{ ip: string; port: number }>();
 
-    const udpTrackers = await getUdpTrackers(peerId, parsed);
-    // udp trackers already returns parsed peers
-    udpTrackers?.forEach(p => peers.add(p));
+    if (!options.skipUdp) {
+        const udpTrackers = await getUdpTrackers(peerId, parsed);
+        udpTrackers?.forEach(p => peers.add(p));
+    }
 
-    console.log(`Found ${peers.size} peers from UDP trackers`);
+    // console.log(`Found ${peers.size} peers from UDP trackers`);
 
-    // // http trackers need parsing
-    // const httpTrackers = await getHttpTrackers(peerId, parsed);
-    // if (httpTrackers) {
-    //     for (const httpTracker of httpTrackers) {
-    //         const trackerPeers = parseTrackerPeers(httpTracker);
-    //         if (!trackerPeers) continue;
-    //         trackerPeers.forEach(p => peers.add(p));
-    //     }
-    // }
+    if (!options.skipHttp) {
+        const httpTrackers = await getHttpTrackers(peerId, parsed);
+        httpTrackers?.forEach(p => peers.add(p));
+    }
+    
+    // console.log(`Found ${peers.size} peers from HTTP trackers`);
 
     // for (const peer of peers) {
     //     await tryConnect(parsed.info, peerId, peer);
     // }
     const peerList = [...peers];
     const CONCURRENCY = 10; // tune as needed
-    for (let i = 0; i < peerList.length; i += CONCURRENCY) {
-        const batch = peerList.slice(i, i + CONCURRENCY);
-        await Promise.allSettled(
-            batch.map(peer => tryConnect(parsed.info, peerId, peer, 2000))
-        );
-    }
+    if (peerList.length === 0) return null;
+
+    // Resolve on first successful metadata; ignore others
+    return await firstSuccess(peerList, CONCURRENCY, (peer) => tryConnect(parsed.info, peerId, peer, 4000));
+}
+
+async function firstSuccess<TInput, TOut>(items: TInput[], concurrency: number, worker: (item: TInput) => Promise<TOut | null>): Promise<TOut | null> {
+    return new Promise<TOut | null>((resolve) => {
+        let idx = 0;
+        let resolved = false;
+        let running = 0;
+
+        const launch = () => {
+            while (running < concurrency && idx < items.length && !resolved) {
+                const current = items[idx++];
+                running++;
+                worker(current)
+                    .then((res) => {
+                        if (!resolved && res) {
+                            resolved = true;
+                            resolve(res);
+                        }
+                    })
+                    .catch(() => {})
+                    .finally(() => {
+                        running--;
+                        if (!resolved) {
+                            if (idx < items.length) launch();
+                            else if (running === 0) resolve(null);
+                        }
+                    });
+            }
+        };
+        launch();
+    });
 }
 
 // ---- Helpers for framed reads and message parsing ----

@@ -1,4 +1,5 @@
 import { bdecode } from './bdecode.ts';
+import { parseTrackerPeers } from './parse-tracker-peers.ts';
 
 function hexToUint8(hex: string): Uint8Array {
     const bytes = new Uint8Array(hex.length / 2);
@@ -46,7 +47,21 @@ export async function getHttpTrackers(peerId: string, parsedMagnet: {
 
         try {
             const decoded = bdecode(body);
-            decoded.peers.forEach((peer: { ip: string; port: number }) => peersSet.add(`${peer.ip}:${peer.port}`));
+            // {
+            //     complete: 69,
+            //     incomplete: 4,
+            //     interval: 1800,
+            //     "min interval": 900,
+            //     peers: Uint8Array(24) [
+            //         75,  91, 203, 116,  26, 225,  86,
+            //         177, 146,   3,  26, 225,  82,  12,
+            //         184, 196,  26, 225,  92,  20, 231,
+            //         245,  26, 225
+            //     ]
+            // }
+            const peers = parseTrackerPeers(decoded.peers);
+            if (!peers) continue;
+            peers.forEach((peer: { ip: string; port: number }) => peersSet.add(`${peer.ip}:${peer.port}`));
         } catch (e) {
             console.log(new TextDecoder().decode(body));
         }
