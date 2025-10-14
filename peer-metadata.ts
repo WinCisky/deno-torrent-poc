@@ -141,14 +141,14 @@ export async function getTorrentMetadata(magnet: string, options: { skipHttp?: b
         udpTrackers?.forEach(p => peers.add(p));
     }
 
-    // console.log(`Found ${peers.size} peers from UDP trackers`);
+    console.log(`Found ${peers.size} peers from UDP trackers`);
 
     if (!options.skipHttp) {
         const httpTrackers = await getHttpTrackers(peerId, parsed);
         httpTrackers?.forEach(p => peers.add(p));
     }
     
-    // console.log(`Found ${peers.size} peers from HTTP trackers`);
+    console.log(`Found ${peers.size} peers from HTTP trackers`);
 
     // for (const peer of peers) {
     //     await tryConnect(parsed.info, peerId, peer);
