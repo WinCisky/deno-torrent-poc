@@ -134,21 +134,22 @@ export async function getTorrentMetadata(magnet: string, options: { skipHttp?: b
 }): Promise<Uint8Array | null> {
 
     const parsed = parseMagnet(magnet);
+    if (!parsed) {
+        return null;
+    }
     const peers = new Set<{ ip: string; port: number }>();
 
     if (!options.skipUdp) {
         const udpTrackers = await getUdpTrackers(peerId, parsed);
         udpTrackers?.forEach(p => peers.add(p));
+        console.log(`Found ${udpTrackers?.length ?? 0} peers from UDP trackers`);
     }
-
-    console.log(`Found ${peers.size} peers from UDP trackers`);
 
     if (!options.skipHttp) {
         const httpTrackers = await getHttpTrackers(peerId, parsed);
         httpTrackers?.forEach(p => peers.add(p));
+        console.log(`Found ${httpTrackers?.length ?? 0} peers from HTTP trackers`);
     }
-    
-    console.log(`Found ${peers.size} peers from HTTP trackers`);
 
     // for (const peer of peers) {
     //     await tryConnect(parsed.info, peerId, peer);
