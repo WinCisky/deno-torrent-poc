@@ -1,2 +1,7 @@
-only http/s endpoints are used
-handshake not implemented
+# Deno torrent PoC
+
+## Development
+
+```bash
+deno run --allow-all --unstable-net --watch main.ts
+```
