@@ -61,22 +61,46 @@ Deno.serve({
         // mock metadata for testing loading it from local file
         const metadata = await Deno.readFile("./metadata.torrent");
 
-        if (metadata) {            
+        if (metadata) {
             const bdecoded = bdecode(metadata) as Record<string, any>;
-            console.log("Parsed metadata:", bdecoded);
+            // console.log("Parsed metadata:", bdecoded);
+            const pieceLength = bdecoded['piece length'];
 
             const imagesExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'];
-            const imagesFiles = bdecoded['files'].filter((file: Record<string, any>) => {
-                // parse arraybuffer to string
-                // const fileName = new TextDecoder().decode(file['path'].flat());
-                // console.log("Checking file:", new TextDecoder().decode(file['path']));
-                const filePaths = file['path'].map((part: Uint8Array) => new TextDecoder().decode(part));
-                console.log("Checking file:", filePaths);
-                const fileName = filePaths.join('/');
-                return imagesExtensions.some(ext => fileName.toLowerCase().endsWith(ext));
-            });
+            let firstImageStartOffset = -1;
+            let firstImageLength = -1; 
+            for (let i = 0; i < (bdecoded['files'] || []).length; i++) {
+                const file = bdecoded['files'][i];
+                const filePathParts = file['path'].map((part: Uint8Array) => new TextDecoder().decode(part));
+                const fileName = filePathParts.join('/').toLowerCase();
+                if (imagesExtensions.some(ext => fileName.toLowerCase().endsWith(ext))) {
+                    firstImageLength = file['length'];
+                    break;
+                }
+                firstImageStartOffset += file['length'];
+            }
 
-            console.log("Image files found:", imagesFiles);
+            // let totalOffset = 0;
+            // for (const file of bdecoded['files'] || []) {
+            //     totalOffset += file['length'];
+            //     const filePathParts = file['path'].map((part: Uint8Array) => new TextDecoder().decode(part));
+            //     const fileName = filePathParts.join('/').toLowerCase();
+            //     console.log(`File: ${fileName}, Length: ${file['length']} bytes`);
+            // }
+            // console.log(`Total torrent size: ${totalOffset} bytes, ${Math.floor(totalOffset / pieceLength)} files.`);
+
+            const firstImageEndOffset = firstImageStartOffset + firstImageLength;
+            const piecesIndexStart = Math.floor(firstImageStartOffset / pieceLength);
+            const piecesIndexEnd = Math.floor((firstImageEndOffset - 1) / pieceLength);
+
+            // each piece is composed of 20-byte SHA1 hash
+            const piecesSha1: Uint8Array[] = [];
+            for (let i = piecesIndexStart; i <= piecesIndexEnd; i++) {
+                for (let j = 0; j < 20; j++) {
+                    piecesSha1.push(bdecoded['pieces'].subarray(i * 20 + j, i * 20 + j + 1));
+                }
+            }
+            console.log(`Image file spans pieces ${piecesSha1}`);
 
             // TODO: Retrieve the actual image data from peers using the metadata information.
 
@@ -96,3 +120,73 @@ Deno.serve({
         status: 404,
     });
 });
+
+
+type FileEntry = { length: number; path: string[] }; // from info.files
+type PlanBlock = { pieceIndex: number; begin: number; length: number };
+
+function buildFilePlan(
+    files: FileEntry[] | null,
+    pieceLength: number,
+    piecesSha1: Uint8Array[], // 20-byte entries
+    targetPath: string[],
+    blockSize = 16 * 1024,
+) {
+    // 1) Compute torrent-wide file offsets
+    const index: { path: string; start: number; length: number }[] = [];
+    let cursor = 0;
+    if (files && files.length) {
+        for (const f of files) {
+            const path = f.path.map(p => new TextDecoder().decode(p as unknown as Uint8Array)).join("/");
+            index.push({ path, start: cursor, length: f.length });
+            cursor += f.length;
+        }
+    } else {
+        // single-file mode
+        const name = "file"; // replace with info.name
+        const length = /* info.length */ 0; // fill with real length
+        index.push({ path: name, start: 0, length });
+        cursor = length;
+    }
+
+    // 2) Locate target file
+    const pathStr = targetPath.join("/");
+    const f = index.find(e => e.path === pathStr);
+    if (!f) throw new Error("Target file not found in torrent metadata");
+
+    const fileStart = f.start;
+    const fileEnd = f.start + f.length;
+
+    // 3) Piece range
+    const firstPiece = Math.floor(fileStart / pieceLength);
+    const lastPiece = Math.floor((fileEnd - 1) / pieceLength);
+
+    // 4) Full block plan (full pieces for verification)
+    const blocks: PlanBlock[] = [];
+    for (let p = firstPiece; p <= lastPiece; p++) {
+        const pieceSize = (p === piecesSha1.length - 1)
+            ? (cursor - p * pieceLength) // last piece may be shorter overall
+            : pieceLength;
+
+        for (let begin = 0; begin < pieceSize; begin += blockSize) {
+            const len = Math.min(blockSize, pieceSize - begin);
+            blocks.push({ pieceIndex: p, begin, length: len });
+        }
+    }
+
+    // 5) For writing: compute per-piece file subranges
+    function pieceFileSlice(pieceIndex: number) {
+        const pieceStart = pieceIndex * pieceLength;
+        const pieceEnd = pieceStart + ((pieceIndex === piecesSha1.length - 1) ? (cursor - pieceStart) : pieceLength);
+        const writeStart = Math.max(pieceStart, fileStart);
+        const writeEnd = Math.min(pieceEnd, fileEnd);
+        if (writeStart >= writeEnd) return null;
+        return {
+            offsetInPiece: writeStart - pieceStart,
+            bytesToWrite: writeEnd - writeStart,
+            offsetInFile: writeStart - fileStart,
+        };
+    }
+
+    return { blocks, firstPiece, lastPiece, pieceFileSlice };
+}
