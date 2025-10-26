@@ -5,13 +5,13 @@ import { parseTrackerPeers } from './parse-tracker-peers.ts';
 import { bdecode } from './bdecode.ts';
 
 // Minimal connection shape we use, to avoid depending on Deno types in annotations
-type ConnLike = {
+export type ConnLike = {
     read(p: Uint8Array): Promise<number | null>;
     write(p: Uint8Array): Promise<number>;
     close(): void;
 };
 
-function hexToBytes(hex: string): Uint8Array {
+export function hexToBytes(hex: string): Uint8Array {
     if (hex.length !== 40) throw new Error("Invalid hex info_hash");
     const bytes = new Uint8Array(20);
     for (let i = 0; i < 20; i++) {
@@ -40,7 +40,7 @@ function bencodeDict(obj: Record<string, any>): Uint8Array {
     return encoder.encode(result);
 }
 
-async function sendExtendedHandshake(conn: ConnLike) {
+export async function sendExtendedHandshake(conn: ConnLike) {
     const handshakeDict = {
         m: {
             ut_metadata: 1,
@@ -111,7 +111,7 @@ async function tryConnect(infoHash: string, peerId: string, peer: { ip: string, 
     return null;
 }
 
-function createHandshake(infoHash: Uint8Array, peerId: Uint8Array): Uint8Array {
+export function createHandshake(infoHash: Uint8Array, peerId: Uint8Array): Uint8Array {
     const buffer = new Uint8Array(68);
     buffer[0] = 19;
     buffer.set(new TextEncoder().encode("BitTorrent protocol"), 1);
@@ -137,6 +137,23 @@ export async function getTorrentMetadata(magnet: string, options: { skipHttp?: b
     if (!parsed) {
         return null;
     }
+
+    const peers = await getPeersFromParsedMagnet(parsed, options);
+    if (!peers || peers.length === 0) {
+        console.log("No peers found from trackers");
+        return null;
+    }
+
+    const CONCURRENCY = 10; // tune as needed
+
+    // Resolve on first successful metadata; ignore others
+    return await firstSuccess(peers, CONCURRENCY, (peer) => tryConnect(parsed.info, peerId, peer, 4000));
+}
+
+export async function getPeersFromParsedMagnet(parsed: ReturnType<typeof parseMagnet>, options: { skipHttp?: boolean; skipUdp?: boolean; skipDht?: boolean; } = {}): Promise<{ ip: string; port: number }[] | null> {
+    if (!parsed) {
+        return null;
+    }
     const peers = new Set<{ ip: string; port: number }>();
 
     if (!options.skipUdp) {
@@ -155,14 +172,11 @@ export async function getTorrentMetadata(magnet: string, options: { skipHttp?: b
     //     await tryConnect(parsed.info, peerId, peer);
     // }
     const peerList = [...peers];
-    const CONCURRENCY = 10; // tune as needed
     if (peerList.length === 0) return null;
-
-    // Resolve on first successful metadata; ignore others
-    return await firstSuccess(peerList, CONCURRENCY, (peer) => tryConnect(parsed.info, peerId, peer, 4000));
+    return peerList;
 }
 
-async function firstSuccess<TInput, TOut>(items: TInput[], concurrency: number, worker: (item: TInput) => Promise<TOut | null>): Promise<TOut | null> {
+export async function firstSuccess<TInput, TOut>(items: TInput[], concurrency: number, worker: (item: TInput) => Promise<TOut | null>): Promise<TOut | null> {
     return new Promise<TOut | null>((resolve) => {
         let idx = 0;
         let resolved = false;
@@ -179,7 +193,7 @@ async function firstSuccess<TInput, TOut>(items: TInput[], concurrency: number, 
                             resolve(res);
                         }
                     })
-                    .catch(() => {})
+                    .catch(() => { })
                     .finally(() => {
                         running--;
                         if (!resolved) {
@@ -205,7 +219,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, label = "op"): Promise<T> {
     });
 }
 
-async function readExactly(conn: ConnLike, n: number, timeoutMs: number): Promise<Uint8Array> {
+export async function readExactly(conn: ConnLike, n: number, timeoutMs: number): Promise<Uint8Array> {
     const buf = new Uint8Array(n);
     let off = 0;
     while (off < n) {
@@ -230,7 +244,7 @@ async function readBtMessage(conn: ConnLike, timeoutMs: number): Promise<BtMessa
     return { id, payload: body.subarray(1) };
 }
 
-async function readUntilExtendedHandshake(conn: ConnLike, timeoutMs: number): Promise<Record<string, unknown> | null> {
+export async function readUntilExtendedHandshake(conn: ConnLike, timeoutMs: number): Promise<Record<string, unknown> | null> {
     const deadline = Date.now() + timeoutMs * 2; // allow a couple of messages within ~2x timeout
     while (Date.now() < deadline) {
         const { id, payload } = await readBtMessage(conn, timeoutMs) as BtMessage;
@@ -286,7 +300,7 @@ function buildExtendedMessage(extId: number, payload: Uint8Array): Uint8Array {
     return out;
 }
 
-async function sendInterested(conn: ConnLike): Promise<void> {
+export async function sendInterested(conn: ConnLike): Promise<void> {
     // length=1, id=2
     const buf = new Uint8Array(5);
     const view = new DataView(buf.buffer);
