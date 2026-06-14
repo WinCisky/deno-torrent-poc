@@ -1,78 +1,143 @@
-import { bdecode } from './bdecode.ts';
-import { downloadFirstImage } from './download-image.ts';
-import { parseMagnet } from './parse-magnet.ts';
-import { getTorrentMetadata, getPeersFromParsedMagnet, firstSuccess, sendInterested, createHandshake, readExactly, sendExtendedHandshake, readUntilExtendedHandshake, hexToBytes, ConnLike } from './peer-metadata.ts';
-
-const magnet = "magnet:?xt=urn:btih:7B973E55B2198EAC530440DC7D9589DD708F5692&dn=Shrek+%282001%29+1080p+BrRip+x264+-+1GB-+YIFY&tr=http%3A%2F%2Fp4p.arenabg.com%3A1337%2Fannounce&tr=udp%3A%2F%2F47.ip-51-68-199.eu%3A6969%2Fannounce&tr=udp%3A%2F%2F9.rarbg.me%3A2780%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2710%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2730%2Fannounce&tr=udp%3A%2F%2F9.rarbg.to%3A2920%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Fopentracker.i2p.rocks%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.cyberia.is%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.dler.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.internetwarriors.net%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.pirateparty.gr%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce"
+import { getTorrentMetadata } from "./peer-metadata.ts";
+import { parseMagnet } from "./parse-magnet.ts";
+import {
+  contentDispositionFilename,
+  createTorrentDownloadStream,
+  createTorrentFilePlan,
+  TorrentDownloadError,
+} from "./torrent-download.ts";
 
 const METADATA_ROUTE = new URLPattern({ pathname: "/metadata/:magnet" });
-const IMAGE_ROUTE = new URLPattern({ pathname: "/image/:magnet" });
+const DOWNLOAD_ROUTE = new URLPattern({ pathname: "/download" });
+
+const trackerOptions = {
+  skipHttp: true,
+  skipUdp: false,
+  skipDht: true,
+};
 
 Deno.serve({
-    port: 4122,
-    hostname: "0.0.0.0"
+  port: 4122,
+  hostname: "0.0.0.0",
 }, async (req: Request) => {
-
-    const metadataMatch = METADATA_ROUTE.exec(req.url);
-    if (metadataMatch) {
-        const options = {
-            skipHttp: true,
-            skipUdp: false,
-            skipDht: true // DHT not implemented yet
-        };
-        const base64magnet = metadataMatch.pathname.groups.magnet;
-        if (!base64magnet) {
-            return new Response("Magnet link missing", { status: 400 });
-        }
-        const magnet = atob(base64magnet);
-        if (!magnet.startsWith("magnet:")) {
-            return new Response("Invalid magnet link", { status: 400 });
-        }
-        const metadata = await getTorrentMetadata(magnet, options);
-
-        if (metadata) {
-            return new Response(Uint8Array.from(metadata), {
-                status: 200,
-                headers: {
-                    "Content-Type": "application/octet-stream",
-                    "Content-Disposition": `attachment; filename="metadata.torrent"`,
-                },
-            });
-        }
-
-        return new Response('No metadata retrieved', { status: 500 });
+  const metadataMatch = METADATA_ROUTE.exec(req.url);
+  if (metadataMatch) {
+    const base64magnet = metadataMatch.pathname.groups.magnet;
+    if (!base64magnet) {
+      return new Response("Magnet link missing", { status: 400 });
     }
 
-    const retrieveImageMatch = IMAGE_ROUTE.exec(req.url);
-    if (retrieveImageMatch) {
-        const parsed = parseMagnet(magnet);
-        // const base64magnet = retrieveImageMatch.pathname.groups.magnet;
-        // if (!base64magnet) {
-        //     return new Response("Magnet link missing", { status: 400 });
-        // }
-        // const magnet = atob(base64magnet);
-        // if (!magnet.startsWith("magnet:")) {
-        //     return new Response("Invalid magnet link", { status: 400 });
-        // }
-        // const options = {
-        //     skipHttp: true,
-        //     skipUdp: false,
-        //     skipDht: true // DHT not implemented yet
-        // };
-        // const metadata = await getTorrentMetadata(magnet, options);
-
-        // mock metadata for testing loading it from local file
-        const metadata = await Deno.readFile("./metadata.torrent");
-
-        if (!metadata) {
-            return new Response('No metadata retrieved', { status: 500 });
-        }
-        
-        console.log(await downloadFirstImage(metadata, parsed));
-
+    const magnet = decodeBase64Magnet(base64magnet);
+    if (!magnet) {
+      return new Response("Invalid magnet link", { status: 400 });
     }
 
-    return new Response("Route not found", {
-        status: 404,
-    });
+    const metadata = await getTorrentMetadata(magnet, trackerOptions);
+    if (metadata) {
+      return new Response(Uint8Array.from(metadata), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "Content-Disposition": `attachment; filename="metadata.torrent"`,
+        },
+      });
+    }
+
+    return new Response("No metadata retrieved", { status: 500 });
+  }
+
+  const downloadMatch = DOWNLOAD_ROUTE.exec(req.url);
+  if (downloadMatch) {
+    if (req.method !== "POST") {
+      return new Response("Method not allowed", {
+        status: 405,
+        headers: { Allow: "POST" },
+      });
+    }
+
+    try {
+      const body = await readDownloadRequest(req);
+      const parsed = parseMagnet(body.magnet);
+      const metadata = await getTorrentMetadata(body.magnet, trackerOptions);
+
+      if (!metadata) {
+        throw new TorrentDownloadError("No metadata retrieved", 502);
+      }
+
+      const plan = createTorrentFilePlan(metadata, body.path);
+      const stream = await createTorrentDownloadStream(parsed, plan);
+
+      return new Response(stream, {
+        status: 200,
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "Content-Length": String(plan.length),
+          "Content-Disposition": contentDispositionFilename(plan.filename),
+        },
+      });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  }
+
+  return new Response("Route not found", {
+    status: 404,
+  });
 });
+
+type DownloadRequest = {
+  magnet: string;
+  path: string;
+};
+
+async function readDownloadRequest(req: Request): Promise<DownloadRequest> {
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    throw new TorrentDownloadError("Expected JSON request body", 400);
+  }
+
+  if (!isRecord(body)) {
+    throw new TorrentDownloadError("Expected JSON object request body", 400);
+  }
+
+  const magnet = body.magnet;
+  const path = body.path;
+
+  if (typeof magnet !== "string" || !magnet.startsWith("magnet:")) {
+    throw new TorrentDownloadError("Invalid magnet link", 400);
+  }
+
+  if (typeof path !== "string" || path.trim().length === 0) {
+    throw new TorrentDownloadError("Invalid file path", 400);
+  }
+
+  return { magnet, path };
+}
+
+function decodeBase64Magnet(base64magnet: string): string | null {
+  try {
+    const magnet = atob(base64magnet);
+    return magnet.startsWith("magnet:") ? magnet : null;
+  } catch {
+    return null;
+  }
+}
+
+function errorResponse(error: unknown): Response {
+  if (error instanceof TorrentDownloadError) {
+    return new Response(error.message, { status: error.status });
+  }
+
+  if (error instanceof Error) {
+    console.error(error);
+    return new Response(error.message, { status: 500 });
+  }
+
+  return new Response("Unknown error", { status: 500 });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
